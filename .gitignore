@@ -147,5 +147,8 @@ publish/
 *.pfx
 *.publishsettings
 
+# published folder
+published 
+
 # Local Settings
 */appsettings.local.json

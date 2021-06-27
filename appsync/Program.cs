@@ -36,11 +36,11 @@ namespace appsync
             {
                 throw new InvalidOperationException($"The following settings were not set in configuration: '{string.Join("', '", unset)}'.");
             }
-
+            var dateStamp = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}";
             var dir = config.GetSection("Temp").Value ?? Path.GetTempPath();
             var logRoot = config.GetSection("Log").Value ?? dir;
-            BuildDirectory(logRoot);
-            using var file = new StreamWriter(File.OpenWrite(Path.Combine(logRoot, $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log")))
+            BuildDirectory(logRoot, args[0]);
+            using var file = new StreamWriter(File.OpenWrite(Path.Combine(logRoot, args[0], $"{dateStamp}.log")))
             {
                 AutoFlush = true
             };
@@ -49,42 +49,69 @@ namespace appsync
                 Console.WriteLine(s);
                 file.WriteLine(s);
             };
-            using var s3 = new AmazonS3Client();
-            var response = await s3.ListObjectsAsync(target.Bucket, target.Path);
-
-            var latest = response.S3Objects.OrderBy(x => x.LastModified).Last();
-            var version = latest.Key.Split('/').Last();
-            var output = Path.Combine(dir, $"{version}.zip");
-
-            if (File.Exists(output))
+            try
             {
-                log($"File {output} already exists, no updates needed for {args[0]}");
-                return;
+                using var s3 = new AmazonS3Client();
+                var response = await s3.ListObjectsAsync(target.Bucket, target.Path);
+
+                var latest = response.S3Objects.OrderBy(x => x.LastModified).Last();
+                var version = latest.Key.Split('/').Last();
+                var output = Path.Combine(dir, $"{version}.zip");
+
+                if (File.Exists(output))
+                {
+                    log($"File {output} already exists, no updates needed for {args[0]}");
+                    return;
+                }
+                log($"Getting {target.Bucket}/{latest.Key} from s3");
+                var zip = await s3.GetObjectAsync(target.Bucket, latest.Key);
+                await zip.WriteResponseStreamToFileAsync(output, false, default);
+                log($"'{output}' file created");
+
+                //move folder to target
+                var extractPath = Path.Combine(iisApplication.RootPath, $"{iisApplication.LiveFolder}_{version}");
+                var livePath = Path.Combine(iisApplication.RootPath, iisApplication.LiveFolder);
+                if (Directory.Exists(extractPath))
+                {
+                    Directory.Delete(extractPath, true);
+                }
+                ZipFile.ExtractToDirectory(output, extractPath);
+                log($"'{extractPath}' extracted.");
+                var manager = new ServerManager();
+
+                log($"Application pools currently active:");
+                await Task.WhenAll(manager.ApplicationPools.Select(x => Task.Run(() => log(x.Name))));
+                log($"Locating {iisApplication.ApplicationPool} application pool");
+
+                var pool = manager.ApplicationPools.First(x => x.Name.Equals(iisApplication.ApplicationPool, StringComparison.InvariantCultureIgnoreCase));
+                while (pool.State != ObjectState.Stopped)
+                {
+                    if (pool.State == ObjectState.Started)
+                    {
+                        log($"Attempting to stop Application Pool: {pool.Name}");
+                        pool.Stop();
+                    }
+
+                    log($"Stopping Application Pool: {pool.Name}...");
+                    await Task.Delay(500);
+                }
+
+                log($"Stopped Application Pool: {pool.Name}");
+
+                Directory.Move(livePath, $"{livePath}_{dateStamp}");
+                log($"Moved '{livePath}' => '{livePath}_{dateStamp}'");
+                Directory.Move(extractPath, livePath);
+                log($"Moved '{extractPath}' => '{livePath}'");
+
+                log($"Attempting to start Application Pool: {pool.Name}");
+                pool.Start();
+                log($"Started Application Pool: {pool.Name}");
             }
-            log($"Getting {target.Bucket}/{latest.Key} from s3");
-            var zip = await s3.GetObjectAsync(target.Bucket, latest.Key);
-            await zip.WriteResponseStreamToFileAsync(output, false, default);
-            log($"'{output}' file created");
-
-            //move folder to target
-            var extractPath = Path.Combine(iisApplication.RootPath, iisApplication.LiveFolder, version);
-            var livePath = Path.Combine(iisApplication.RootPath, iisApplication.LiveFolder);
-            ZipFile.ExtractToDirectory(output, extractPath);
-            log($"'{extractPath}' extracted.");
-            var manager = new ServerManager();
-            var pool = manager.ApplicationPools.First(x => x.Name.Equals(iisApplication.ApplicationPool, StringComparison.InvariantCultureIgnoreCase));
-            log($"Attempting to stop Application Pool: {pool.Name}");
-            pool.Stop();
-            log($"Stopped Application Pool: {pool.Name}");
-
-            Directory.Move(livePath, $"{livePath}_");
-            log($"Moved '{livePath}' => '{livePath}_'");
-            Directory.Move(extractPath, livePath);
-            log($"Moved '{extractPath}' => '{livePath}'");
-
-            log($"Attempting to start Application Pool: {pool.Name}");
-            pool.Start();
-            log($"Started Application Pool: {pool.Name}");
+            catch (Exception ex)
+            {
+                log($"{ex}");
+                throw ex;
+            }
         }
 
         private static void BuildDirectory(string root, string sub = null)
