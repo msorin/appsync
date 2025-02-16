@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Amazon.S3;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Web.Administration;
+using Slack.Webhooks;
 namespace appsync
 {
     class Program
@@ -40,6 +41,7 @@ namespace appsync
             var dateStamp = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}";
             var dir = config.GetSection("Temp").Value ?? Path.GetTempPath();
             var logRoot = config.GetSection("Log").Value ?? dir;
+
             BuildDirectory(logRoot, args[0]);
             var work = new List<Task>();
             var logDir = new DirectoryInfo(Path.Combine(logRoot, args[0]));
@@ -133,6 +135,12 @@ namespace appsync
                     log($"Attempting to start Application Pool: {pool.Name}");
                     pool.Start();
                     log($"Started Application Pool: {pool.Name}");
+                    using var cli = new SlackClient(config.GetSection("AwsChannel").Value);
+                    await cli.PostAsync(new SlackMessage
+                    {
+                        Markdown = true,
+                        Text = $":tada: {args[0]} version {version} deployed with great success! :tada:",
+                    });
                 }
                 catch (Exception ex)
                 {

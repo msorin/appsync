@@ -151,4 +151,4 @@ publish/
 published 
 
 # Local Settings
-*/appsettings.local.json
+*/appsettings.*.json
