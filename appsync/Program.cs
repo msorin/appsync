@@ -53,7 +53,7 @@ namespace appsync
             Action<string> log = (s) =>
             {
                 Console.WriteLine(s);
-                file.WriteLine(s);
+                file.WriteLine($"{DateTime.Now:o} | {s}");
             };
             if (logDir.Exists)
             {
@@ -81,6 +81,7 @@ namespace appsync
                 try
                 {
                     using var s3 = new AmazonS3Client();
+                    using var cli = new SlackClient(config.GetSection("AwsChannel").Value);
                     var response = await s3.ListObjectsAsync(target.Bucket, target.Path);
 
                     var latest = response.S3Objects.OrderBy(x => x.LastModified).Last();
@@ -126,16 +127,54 @@ namespace appsync
                     }
 
                     log($"Stopped Application Pool: {pool.Name}");
+                    async Task performMove(int attempt)
+                    {
+                        try
+                        {
+                            Directory.Move(livePath, $"{livePath}_{dateStamp}");
+                            log($"Moved '{livePath}' => '{livePath}_{dateStamp}'");
+                            Directory.Move(extractPath, livePath);
+                            log($"Moved '{extractPath}' => '{livePath}'");
+                        }
+                        catch (Exception ex)
+                        {
+                            log($"{ex}");
+                            await Task.Delay(500);
 
-                    Directory.Move(livePath, $"{livePath}_{dateStamp}");
-                    log($"Moved '{livePath}' => '{livePath}_{dateStamp}'");
-                    Directory.Move(extractPath, livePath);
-                    log($"Moved '{extractPath}' => '{livePath}'");
+                            if (attempt < 10)
+                            {
+                                await performMove(++attempt);
+                                return;
+                            }
 
-                    log($"Attempting to start Application Pool: {pool.Name}");
-                    pool.Start();
-                    log($"Started Application Pool: {pool.Name}");
-                    using var cli = new SlackClient(config.GetSection("AwsChannel").Value);
+                            await cli.PostAsync(new SlackMessage
+                            {
+                                Markdown = true,
+                                Text = $":this-is-fine: {args[0]} FAILED TO DEPLOY (action required) :this-is-fine:",
+                            });
+
+                            log($"Deleting file '{output})' to retry");
+                            File.Delete(output);
+                            await StartPool(1);
+                            throw;
+                        }
+                    }
+
+                    async Task StartPool(int attempt)
+                    {
+                        log($"Attempting (attempt: {attempt}) to start Application Pool: {pool.Name}");
+                        pool.Start();
+                        log($"Started Application Pool: {pool.Name}");
+                        if (pool.State != ObjectState.Started)
+                        {
+                            await Task.Delay(500);
+                            await StartPool(++attempt);
+                        }
+                    }
+
+                    await performMove(1);
+                    await StartPool(1);
+
                     await cli.PostAsync(new SlackMessage
                     {
                         Markdown = true,
