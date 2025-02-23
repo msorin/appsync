@@ -53,7 +53,7 @@ namespace appsync
             Action<string> log = (s) =>
             {
                 Console.WriteLine(s);
-                file.WriteLine($"{DateTime.Now:o} | {s}");
+                file.WriteLine($"{DateTime.UtcNow:o} | {s}");
             };
             if (logDir.Exists)
             {
@@ -109,10 +109,12 @@ namespace appsync
                     log($"'{extractPath}' extracted.");
                     var manager = new ServerManager();
 
-                    log($"Application pools currently active:");
-                    await Task.WhenAll(manager.ApplicationPools.Select(x => Task.Run(() => log(x.Name))));
+                    log($"IIS Application Pools available");
+                    foreach(var x in manager.ApplicationPools)
+                    {
+                        log($"'{x.Name}': {x.State}");
+                    }
                     log($"Locating {iisApplication.ApplicationPool} application pool");
-
                     var pool = manager.ApplicationPools.First(x => x.Name.Equals(iisApplication.ApplicationPool, StringComparison.InvariantCultureIgnoreCase));
                     while (pool.State != ObjectState.Stopped)
                     {
@@ -153,7 +155,7 @@ namespace appsync
                                 Text = $":this-is-fine: {args[0]} FAILED TO DEPLOY (action required) :this-is-fine:",
                             });
 
-                            log($"Deleting file '{output})' to retry");
+                            log($"Deleting file '{output})' to retry next run.");
                             File.Delete(output);
                             await StartPool(1);
                             throw;
